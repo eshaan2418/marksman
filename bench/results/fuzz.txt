@@ -1,0 +1,1 @@
+cargo +nightly fuzz run to_html (libFuzzer, seeded with the 652 spec examples), 2026-11-02: 3,019,908 runs in 301 s, no panics or nondeterministic output. Final: cov 3405, ft 16854, corpus 4533.

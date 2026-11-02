@@ -1,0 +1,3 @@
+marksman: 652/652 examples identical to the spec
+pulldown-cmark 0.13.3: 630/652 examples identical to the spec
+comrak 0.47.0: 580/652 examples identical to the spec

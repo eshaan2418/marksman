@@ -1,0 +1,32 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Lint
+        run: make lint
+      - name: CommonMark spec (652 examples) + unit + pathological tests
+        run: make test
+      - name: Demo
+        run: make demo
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - name: Fuzz (60 s)
+        run: make fuzz FUZZTIME=60

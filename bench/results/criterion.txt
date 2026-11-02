@@ -1,0 +1,16 @@
+docs.md/marksman/docs.md
+                        time:   [11.142 ms 11.251 ms 11.353 ms]
+                        thrpt:  [113.80 MiB/s 114.83 MiB/s 115.95 MiB/s]
+docs.md/pulldown-cmark/docs.md
+                        time:   [3.2050 ms 3.2483 ms 3.2916 ms]
+                        thrpt:  [392.49 MiB/s 397.71 MiB/s 403.09 MiB/s]
+docs.md/comrak/docs.md  time:   [9.5181 ms 10.203 ms 10.925 ms]
+                        thrpt:  [118.25 MiB/s 126.62 MiB/s 135.73 MiB/s]
+spec.md/marksman/spec.md
+                        time:   [3.0579 ms 3.3019 ms 3.5095 ms]
+                        thrpt:  [35.268 MiB/s 37.485 MiB/s 40.476 MiB/s]
+spec.md/pulldown-cmark/spec.md
+                        time:   [1.5383 ms 1.5424 ms 1.5462 ms]
+                        thrpt:  [80.051 MiB/s 80.244 MiB/s 80.460 MiB/s]
+spec.md/comrak/spec.md  time:   [4.7159 ms 4.8501 ms 4.9406 ms]
+                        thrpt:  [25.052 MiB/s 25.519 MiB/s 26.246 MiB/s]
