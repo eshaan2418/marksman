@@ -1,0 +1,6 @@
+This crate includes src/entities.rs, generated from the WHATWG HTML Standard list of named
+character references (https://html.spec.whatwg.org/entities.json), (c) WHATWG,
+licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+
+The CommonMark spec examples used by tests/spec.rs are downloaded at test time
+(scripts/fetch_spec.sh) and are not redistributed; the spec is licensed CC BY-SA 4.0.

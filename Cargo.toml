@@ -1,0 +1,31 @@
+[package]
+name = "marksman"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A dependency-free CommonMark 0.31.2 parser and HTML renderer that passes the spec test suite"
+license = "MIT"
+repository = "https://github.com/eshaan2418/marksman"
+readme = "README.md"
+keywords = ["markdown", "commonmark", "parser", "html"]
+categories = ["parser-implementations", "text-processing"]
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+pulldown-cmark = { version = "=0.13.3", default-features = false, features = ["html"] }
+comrak = { version = "0.47", default-features = false }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+[[bench]]
+name = "parse"
+harness = false
+
+[[bin]]
+name = "marksman"
+path = "src/main.rs"
