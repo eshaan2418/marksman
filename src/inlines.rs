@@ -41,6 +41,17 @@ struct Inline<'a> {
     delims: Vec<Delim>,
     top: Option<usize>, // most recent live delimiter
     brackets: Vec<Bracket>,
+    /// The last text node created by append_text: the only node it may merge into. Delimiter
+    /// runs, bracket openers, and escaped characters are separate nodes and never merged, so
+    /// merging is O(1) instead of a scan of the delimiter and bracket stacks.
+    mergeable: Option<NodeId>,
+    /// A destination scan from this position (or later) is known to run to the end of the
+    /// subject without a `)` or whitespace, so it can only fail. Makes `[a](b[a](b...` linear.
+    dest_fails_from: usize,
+    /// After a code-span scan that reached the end without a closer: (scan start, last start
+    /// of each backtick-run length seen). A later opener of length n has a closer iff a run of
+    /// length n starts after it, so unmatched openers no longer rescan the rest of the text.
+    ticks_memo: Option<(usize, HashMap<usize, usize>)>,
 }
 
 /// Parse inline content of every paragraph and heading under `root`.
@@ -69,6 +80,9 @@ pub(crate) fn process(arena: &mut Arena, root: NodeId, refmap: &RefMap) {
             delims: Vec::new(),
             top: None,
             brackets: Vec::new(),
+            mergeable: None,
+            dest_fails_from: usize::MAX,
+            ticks_memo: None,
         };
         while p.parse_inline(leaf) {}
         p.process_emphasis(None);
@@ -93,15 +107,15 @@ impl Inline<'_> {
     fn append_text(&mut self, block: NodeId, s: &str) -> NodeId {
         // Merge with a preceding text node to keep the tree small.
         if let Some(last) = self.arena.nodes[block].last_child
+            && self.mergeable == Some(last)
             && let NodeValue::Text(t) = &mut self.arena.nodes[last].value
-            && !self.delims.iter().any(|d| d.active && d.node == last)
-            && !self.brackets.iter().any(|b| b.node == last)
         {
             t.push_str(s);
             return last;
         }
         let n = text(self.arena, s);
         self.arena.append_child(block, n);
+        self.mergeable = Some(n);
         n
     }
 
@@ -222,7 +236,18 @@ impl Inline<'_> {
         }
         let n = i - start;
         let after_open = i;
+        if let Some((from, last)) = &self.ticks_memo
+            && after_open >= *from
+            && !last.get(&n).is_some_and(|&p| p >= after_open)
+        {
+            // Known: no run of exactly n backticks after this point.
+            self.pos = after_open;
+            let ticks = self.subject[start..after_open].to_string();
+            self.append_text(block, &ticks);
+            return true;
+        }
         // Find a closing run of exactly n backticks.
+        let mut runs: HashMap<usize, usize> = HashMap::new();
         let mut j = after_open;
         while j < b.len() {
             if b[j] == b'`' {
@@ -243,9 +268,17 @@ impl Inline<'_> {
                     self.append(block, NodeValue::Code(contents));
                     return true;
                 }
+                runs.insert(j - run_start, run_start);
             } else {
                 j += 1;
             }
+        }
+        if self
+            .ticks_memo
+            .as_ref()
+            .is_none_or(|(from, _)| after_open < *from)
+        {
+            self.ticks_memo = Some((after_open, runs));
         }
         self.pos = after_open;
         let ticks = self.subject[start..after_open].to_string();
@@ -359,8 +392,8 @@ impl Inline<'_> {
                     break;
                 }
                 let odd_match = (self.delims[c].can_open || self.delims[o].can_close)
-                    && self.delims[c].origdelims % 3 != 0
-                    && (self.delims[o].origdelims + self.delims[c].origdelims) % 3 == 0;
+                    && !self.delims[c].origdelims.is_multiple_of(3)
+                    && (self.delims[o].origdelims + self.delims[c].origdelims).is_multiple_of(3);
                 if self.delims[o].cc == cc && self.delims[o].can_open && !odd_match {
                     found = true;
                     break;
@@ -489,7 +522,12 @@ impl Inline<'_> {
         if self.peek() == Some(b'(') {
             self.pos += 1;
             self.spnl();
-            if let Some(d) = parse_link_destination(&self.subject, &mut self.pos) {
+            let dest_result = if self.pos >= self.dest_fails_from && self.peek() != Some(b'<') {
+                None
+            } else {
+                parse_link_destination(&self.subject, &mut self.pos, &mut self.dest_fails_from)
+            };
+            if let Some(d) = dest_result {
                 let before_title = self.pos;
                 self.spnl();
                 let ws_before = self.pos > before_title
@@ -656,7 +694,7 @@ fn parse_link_label(s: &str, start: usize) -> usize {
 
 /// Link destination: `<...>` or a run without spaces/controls and with balanced parentheses.
 /// Returns the normalised URL and advances `pos`.
-fn parse_link_destination(s: &str, pos: &mut usize) -> Option<String> {
+fn parse_link_destination(s: &str, pos: &mut usize, fails_from: &mut usize) -> Option<String> {
     let b = s.as_bytes();
     let start = *pos;
     let raw = if b.get(start) == Some(&b'<') {
@@ -677,6 +715,7 @@ fn parse_link_destination(s: &str, pos: &mut usize) -> Option<String> {
     } else {
         let mut i = start;
         let mut parens = 0usize;
+        let mut saw_close = false;
         while i < b.len() {
             let c = b[i];
             if c == b'\\' && i + 1 < b.len() && util::is_ascii_punct(b[i + 1]) {
@@ -685,6 +724,7 @@ fn parse_link_destination(s: &str, pos: &mut usize) -> Option<String> {
                 parens += 1;
                 i += 1;
             } else if c == b')' {
+                saw_close = true;
                 if parens == 0 {
                     break;
                 }
@@ -695,6 +735,9 @@ fn parse_link_destination(s: &str, pos: &mut usize) -> Option<String> {
             } else {
                 i += 1;
             }
+        }
+        if i == b.len() && !saw_close {
+            *fails_from = (*fails_from).min(start);
         }
         if i == start && b.get(i) != Some(&b')') {
             return None;
@@ -766,7 +809,7 @@ pub(crate) fn parse_reference(s: &str, refmap: &mut RefMap) -> Option<usize> {
         }
     };
     spnl(&mut pos);
-    let dest = parse_link_destination(s, &mut pos)?;
+    let dest = parse_link_destination(s, &mut pos, &mut usize::MAX.clone())?;
     let before_title = pos;
     spnl(&mut pos);
     let mut title = None;
@@ -789,9 +832,7 @@ pub(crate) fn parse_reference(s: &str, refmap: &mut RefMap) -> Option<usize> {
         }
     };
     if !at_line_end(&mut pos) {
-        if title.is_none() {
-            return None;
-        }
+        title.as_ref()?;
         // The title is not followed by the end of the line: drop it and retry without it.
         title = None;
         pos = before_title;

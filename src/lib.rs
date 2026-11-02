@@ -52,17 +52,22 @@ impl Document {
         html::render(&self.arena, self.root)
     }
 
-    /// Depth-first traversal with enter/exit events.
+    /// Depth-first traversal with enter/exit events (iterative: safe on deeply nested input).
     pub fn walk(&self, mut f: impl FnMut(Event<'_>)) {
-        fn go(a: &node::Arena, n: node::NodeId, f: &mut impl FnMut(Event<'_>)) {
-            f(Event::Enter(&a.nodes[n].value));
-            let mut c = a.nodes[n].first_child;
-            while let Some(k) = c {
-                go(a, k, f);
-                c = a.nodes[k].next;
+        let a = &self.arena;
+        let mut stack: Vec<(node::NodeId, bool)> = vec![(self.root, true)];
+        while let Some((n, entering)) = stack.pop() {
+            if !entering {
+                f(Event::Exit(&a.nodes[n].value));
+                continue;
             }
-            f(Event::Exit(&a.nodes[n].value));
+            f(Event::Enter(&a.nodes[n].value));
+            stack.push((n, false));
+            let mut c = a.nodes[n].last_child;
+            while let Some(k) = c {
+                stack.push((k, true));
+                c = a.nodes[k].prev;
+            }
         }
-        go(&self.arena, self.root, &mut f);
     }
 }

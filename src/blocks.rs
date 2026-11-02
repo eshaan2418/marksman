@@ -36,6 +36,9 @@ pub(crate) struct BlockParser<'a> {
     partially_consumed_tab: bool,
     all_closed: bool,
     last_matched_container: NodeId,
+    /// First non-space/tab byte at or after the start of the last whitespace scan on this line,
+    /// so the per-container rescans of deep indentation are O(1) (nested lists stay linear).
+    nn_cache: (usize, usize, bool), // (line number, position, scanned region contained a tab)
     pub refmap: RefMap,
 }
 
@@ -77,6 +80,7 @@ impl<'a> BlockParser<'a> {
             partially_consumed_tab: false,
             all_closed: true,
             last_matched_container: doc,
+            nn_cache: (0, 0, true),
             refmap: HashMap::new(),
         }
     }
@@ -117,21 +121,32 @@ impl<'a> BlockParser<'a> {
 
     fn find_next_nonspace(&mut self) {
         let b = self.line.as_bytes();
-        let mut i = self.offset;
-        let mut cols = self.column;
-        while i < b.len() {
-            match b[i] {
-                b' ' => {
-                    i += 1;
-                    cols += 1;
+        let (cached_line, cached_pos, cached_tab) = self.nn_cache;
+        let (i, cols) =
+            if cached_line == self.line_number && self.offset <= cached_pos && !cached_tab {
+                // Everything in [offset, cached_pos) is spaces: no need to rescan.
+                (cached_pos, self.column + (cached_pos - self.offset))
+            } else {
+                let mut i = self.offset;
+                let mut cols = self.column;
+                let mut tab = false;
+                while i < b.len() {
+                    match b[i] {
+                        b' ' => {
+                            i += 1;
+                            cols += 1;
+                        }
+                        b'\t' => {
+                            i += 1;
+                            cols += 4 - (cols % 4);
+                            tab = true;
+                        }
+                        _ => break,
+                    }
                 }
-                b'\t' => {
-                    i += 1;
-                    cols += 4 - (cols % 4);
-                }
-                _ => break,
-            }
-        }
+                self.nn_cache = (self.line_number, i, tab);
+                (i, cols)
+            };
         self.blank = i >= b.len();
         self.next_nonspace = i;
         self.next_nonspace_column = cols;
@@ -314,15 +329,19 @@ impl<'a> BlockParser<'a> {
             NodeValue::Paragraph => {
                 let mut content = std::mem::take(&mut self.arena.nodes[block].content);
                 let mut had_refs = false;
-                while content.starts_with('[') {
-                    match inlines::parse_reference(&content, &mut self.refmap) {
+                // Consume definitions by offset: draining each one would shift the rest of the
+                // paragraph every time (quadratic in the number of definitions).
+                let mut off = 0;
+                while content[off..].starts_with('[') {
+                    match inlines::parse_reference(&content[off..], &mut self.refmap) {
                         Some(n) => {
-                            content.drain(..n);
+                            off += n;
                             had_refs = true;
                         }
                         None => break,
                     }
                 }
+                content.drain(..off);
                 let empty = content
                     .bytes()
                     .all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
@@ -508,14 +527,14 @@ impl<'a> BlockParser<'a> {
             if rest[n..].iter().all(|&b| b == b' ' || b == b'\t') {
                 self.close_unmatched_blocks();
                 let mut content = std::mem::take(&mut self.arena.nodes[container].content);
-                while content.starts_with('[') {
-                    match inlines::parse_reference(&content, &mut self.refmap) {
-                        Some(k) => {
-                            content.drain(..k);
-                        }
+                let mut off = 0;
+                while content[off..].starts_with('[') {
+                    match inlines::parse_reference(&content[off..], &mut self.refmap) {
+                        Some(k) => off += k,
                         None => break,
                     }
                 }
+                content.drain(..off);
                 if !content.is_empty() {
                     let heading = self.arena.add(
                         NodeValue::Heading {
@@ -608,11 +627,11 @@ impl<'a> BlockParser<'a> {
             marker_offset: self.indent,
             tight: true,
         };
-        let marker_len;
-        match rest.first() {
+
+        let marker_len = match rest.first() {
             Some(&c @ (b'*' | b'+' | b'-')) => {
                 data.bullet_char = c;
-                marker_len = 1;
+                1
             }
             Some(c) if c.is_ascii_digit() => {
                 let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
@@ -629,10 +648,10 @@ impl<'a> BlockParser<'a> {
                 data.ordered = true;
                 data.start = start;
                 data.delimiter = rest[digits];
-                marker_len = digits + 1;
+                digits + 1
             }
             _ => return None,
-        }
+        };
         let next = rest.get(marker_len).copied();
         if !(next.is_none() || next == Some(b' ') || next == Some(b'\t')) {
             return None;
@@ -653,7 +672,7 @@ impl<'a> BlockParser<'a> {
         }
         let blank_item = self.peek(self.offset).is_none();
         let spaces_after = self.column - spaces_start_col;
-        if spaces_after >= 5 || spaces_after < 1 || blank_item {
+        if !(1..5).contains(&spaces_after) || blank_item {
             data.padding = marker_len + 1;
             self.column = spaces_start_col;
             self.offset = spaces_start_offset;
